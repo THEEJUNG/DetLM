@@ -1,0 +1,5 @@
+discrim = sentiment, pretrained_model set to discriminator's = gpt2-medium
+= Prefix of sentence =
+<|endoftext|>My dog died
+
+Using PPLM-Discrim
