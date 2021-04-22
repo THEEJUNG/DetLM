@@ -35,7 +35,7 @@ python pplm_discrim_eval.py \
 ```
 
 ### Train and Generate text from unmodified / PPLM models
-Our default set up for class_label is 2, which generates PPLM outputs with 'neither offensive nor hate-speech text'. Also, the other hyperparameter are equal to the original code. Here, cond_text should be txt file with a prompt of each sentence in one line.
+Our default set up for class_label is 2, which generates PPLM outputs with 'neither offensive nor hate-speech text'. Also, the other hyperparameter are equal to the original code. Here, cond_text should be txt file with a prompt of each sentence in one line. We use /output/test_selected_prompt.txt
 ```
 python pplm.py -D HateOffensive \
     --discriminator_path PATH\TO\YOUR\CLASSIFIER\SAVED \
