@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import argparse
 import csv
 import json
@@ -44,7 +45,6 @@ max_length_seq = 100
 
 class Discriminator(torch.nn.Module):
     """Transformer encoder followed by a Classification Head"""
-
     def __init__(self, class_size, pretrained_model="gpt2-medium", cached_mode=False, device="cpu"):
         super().__init__()
         self.tokenizer = GPT2Tokenizer.from_pretrained(pretrained_model)
@@ -106,7 +106,10 @@ def collate_fn(data):
 
         for i, seq in enumerate(sequences):
             end = lengths[i]
-            padded_sequences[i, :end] = seq[:end]
+            try:
+                padded_sequences[i, :end] = seq[:end]
+            except TypeError:
+                padded_sequences[i, :end] = torch.LongTensor(seq[:end])
 
         return padded_sequences, lengths
 
@@ -208,7 +211,6 @@ def get_cached_data_loader(dataset, batch_size, discriminator, shuffle=False, de
             avg_rep_list = torch.unbind(avg_rep.unsqueeze(1))
             xs += avg_rep_list
             ys += y.cpu().numpy().tolist()
-
     data_loader = torch.utils.data.DataLoader(
         dataset=Dataset(xs, ys), batch_size=batch_size, shuffle=shuffle, collate_fn=cached_collate_fn
     )
@@ -218,7 +220,7 @@ def get_cached_data_loader(dataset, batch_size, discriminator, shuffle=False, de
 
 def train_discriminator(
     dataset,
-    dataset_fp=None,
+    dataset_path=None,
     pretrained_model="gpt2-medium",
     epochs=10,
     batch_size=64,
@@ -232,190 +234,37 @@ def train_discriminator(
     print("Preprocessing {} dataset...".format(dataset))
     start = time.time()
 
-    if dataset == "SST":
-        idx2class = ["positive", "negative", "very positive", "very negative", "neutral"]
+    if dataset == "HateOffensive":
+        idx2class = ["hate-speech", "offensive-language","neither"]
         class2idx = {c: i for i, c in enumerate(idx2class)}
 
         discriminator = Discriminator(
             class_size=len(idx2class), pretrained_model=pretrained_model, cached_mode=cached, device=device
         ).to(device)
 
-        text = torchtext_data.Field()
-        label = torchtext_data.Field(sequential=False)
-        train_data, val_data, test_data = datasets.SST.splits(
-            text,
-            label,
-            fine_grained=True,
-            train_subtrees=True,
-        )
-
-        x = []
-        y = []
-        for i in trange(len(train_data), ascii=True):
-            seq = TreebankWordDetokenizer().detokenize(vars(train_data[i])["text"])
-            seq = discriminator.tokenizer.encode(seq)
-            seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
-            x.append(seq)
-            y.append(class2idx[vars(train_data[i])["label"]])
-        train_dataset = Dataset(x, y)
-
-        test_x = []
-        test_y = []
-        for i in trange(len(test_data), ascii=True):
-            seq = TreebankWordDetokenizer().detokenize(vars(test_data[i])["text"])
-            seq = discriminator.tokenizer.encode(seq)
-            seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
-            test_x.append(seq)
-            test_y.append(class2idx[vars(test_data[i])["label"]])
-        test_dataset = Dataset(test_x, test_y)
-
-        discriminator_meta = {
-            "class_size": len(idx2class),
-            "embed_size": discriminator.embed_size,
-            "pretrained_model": pretrained_model,
-            "class_vocab": class2idx,
-            "default_class": 2,
-        }
-
-    elif dataset == "clickbait":
-        idx2class = ["non_clickbait", "clickbait"]
-        class2idx = {c: i for i, c in enumerate(idx2class)}
-
-        discriminator = Discriminator(
-            class_size=len(idx2class), pretrained_model=pretrained_model, cached_mode=cached, device=device
-        ).to(device)
-
-        with open("datasets/clickbait/clickbait_train_prefix.txt") as f:
-            data = []
-            for i, line in enumerate(f):
-                try:
-                    data.append(eval(line))
-                except Exception:
-                    print("Error evaluating line {}: {}".format(i, line))
-                    continue
-        x = []
-        y = []
-        with open("datasets/clickbait/clickbait_train_prefix.txt") as f:
-            for i, line in enumerate(tqdm(f, ascii=True)):
-                try:
-                    d = eval(line)
-                    seq = discriminator.tokenizer.encode(d["text"])
-
-                    if len(seq) < max_length_seq:
-                        seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
-                    else:
-                        print("Line {} is longer than maximum length {}".format(i, max_length_seq))
-                        continue
-                    x.append(seq)
-                    y.append(d["label"])
-                except Exception:
-                    print("Error evaluating / tokenizing" " line {}, skipping it".format(i))
-                    pass
-
-        full_dataset = Dataset(x, y)
-        train_size = int(0.9 * len(full_dataset))
-        test_size = len(full_dataset) - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, test_size])
-
-        discriminator_meta = {
-            "class_size": len(idx2class),
-            "embed_size": discriminator.embed_size,
-            "pretrained_model": pretrained_model,
-            "class_vocab": class2idx,
-            "default_class": 1,
-        }
-
-    elif dataset == "toxic":
-        idx2class = ["non_toxic", "toxic"]
-        class2idx = {c: i for i, c in enumerate(idx2class)}
-
-        discriminator = Discriminator(
-            class_size=len(idx2class), pretrained_model=pretrained_model, cached_mode=cached, device=device
-        ).to(device)
-
-        x = []
-        y = []
-        with open("datasets/toxic/toxic_train.txt") as f:
-            for i, line in enumerate(tqdm(f, ascii=True)):
-                try:
-                    d = eval(line)
-                    seq = discriminator.tokenizer.encode(d["text"])
-
-                    if len(seq) < max_length_seq:
-                        seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
-                    else:
-                        print("Line {} is longer than maximum length {}".format(i, max_length_seq))
-                        continue
-                    x.append(seq)
-                    y.append(int(np.sum(d["label"]) > 0))
-                except Exception:
-                    print("Error evaluating / tokenizing" " line {}, skipping it".format(i))
-                    pass
-
-        full_dataset = Dataset(x, y)
-        train_size = int(0.9 * len(full_dataset))
-        test_size = len(full_dataset) - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, test_size])
-
-        discriminator_meta = {
-            "class_size": len(idx2class),
-            "embed_size": discriminator.embed_size,
-            "pretrained_model": pretrained_model,
-            "class_vocab": class2idx,
-            "default_class": 0,
-        }
-
-    else:  # if dataset == "generic":
-        # This assumes the input dataset is a TSV with the following structure:
-        # class \t text
-
-        if dataset_fp is None:
-            raise ValueError("When generic dataset is selected, " "dataset_fp needs to be specified aswell.")
-
-        classes = set()
-        with open(dataset_fp) as f:
-            csv_reader = csv.reader(f, delimiter="\t")
-            for row in tqdm(csv_reader, ascii=True):
-                if row:
-                    classes.add(row[0])
-
-        idx2class = sorted(classes)
-        class2idx = {c: i for i, c in enumerate(idx2class)}
-
-        discriminator = Discriminator(
-            class_size=len(idx2class), pretrained_model=pretrained_model, cached_mode=cached, device=device
-        ).to(device)
-
-        x = []
-        y = []
-        with open(dataset_fp) as f:
-            csv_reader = csv.reader(f, delimiter="\t")
-            for i, row in enumerate(tqdm(csv_reader, ascii=True)):
-                if row:
-                    label = row[0]
-                    text = row[1]
-
+        full_dataset =[]
+        for file in ['train.tsv','test.tsv']:
+            x = []
+            y = []
+            with open(os.path.join(dataset_path,file)) as f:
+                for i, line in enumerate(tqdm(f, ascii=True)):
                     try:
+                        _, label, text = line.split("\t")
+                        text = text.replace("\n","")
                         seq = discriminator.tokenizer.encode(text)
+
                         if len(seq) < max_length_seq:
                             seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
-
-                        else:
-                            print("Line {} is longer than maximum length {}".format(i, max_length_seq))
-                            continue
-
                         x.append(seq)
-                        y.append(class2idx[label])
-
+                        y.append(int(label))
                     except Exception:
-                        print("Error tokenizing line {}, skipping it".format(i))
+                        print("Error evaluating / tokenizing" " line {}, skipping it".format(i))
                         pass
 
-        full_dataset = Dataset(x, y)
-        train_size = int(0.9 * len(full_dataset))
-        test_size = len(full_dataset) - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, test_size])
+            tmp_dataset = Dataset(x,y)
+            full_dataset.append(tmp_dataset)
 
+        train_dataset, test_dataset = full_dataset
         discriminator_meta = {
             "class_size": len(idx2class),
             "embed_size": discriminator.embed_size,
@@ -423,6 +272,52 @@ def train_discriminator(
             "class_vocab": class2idx,
             "default_class": 0,
         }
+
+    elif dataset == "SentiTreeBank":
+        idx2class = ["negative", "neutral", "positive"]
+        class2idx = {c: i for i, c in enumerate(idx2class)}
+
+        discriminator = Discriminator(
+            class_size=len(idx2class), pretrained_model=pretrained_model, cached_mode=cached, device=device
+        ).to(device)
+
+        full_dataset =[]
+        for file in ['train.tsv','test.tsv']:
+            x = []
+            y = []
+            with open(os.path.join(dataset_path,file)) as f:
+                for i, line in enumerate(tqdm(f, ascii=True)):
+                    if i==0:
+                        continue
+                    else:
+                        try:
+                            _, text,_,_, label = line.split("\t")
+                            text = text.replace("\n","")
+                            label = label.replace("\n","")
+                            label = class2idx[label]
+                            seq = discriminator.tokenizer.encode(text)
+                            if len(seq) < max_length_seq:
+                                seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
+                            x.append(seq)
+                            y.append(int(label))
+                        except Exception:
+                            print("Error evaluating / tokenizing" " line {}, skipping it".format(i))
+                            pass
+
+            tmp_dataset = Dataset(x,y)
+            full_dataset.append(tmp_dataset)
+
+        train_dataset, test_dataset = full_dataset
+        discriminator_meta = {
+            "class_size": len(idx2class),
+            "embed_size": discriminator.embed_size,
+            "pretrained_model": pretrained_model,
+            "class_vocab": class2idx,
+            "default_class": 0,
+        }
+
+    else:
+        raise ValueError("Dataset type and path shoud be selected.")
 
     end = time.time()
     print("Preprocessed {} data points".format(len(train_dataset) + len(test_dataset)))
@@ -452,7 +347,7 @@ def train_discriminator(
 
     optimizer = optim.Adam(discriminator.parameters(), lr=0.0001)
 
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs)):
         start = time.time()
         print("\nEpoch", epoch + 1)
 
@@ -468,45 +363,35 @@ def train_discriminator(
 
         end = time.time()
         print("Epoch took: {:.3f}s".format(end - start))
-
         print("\nExample prediction")
         predict(example_sentence, discriminator, idx2class, cached=cached, device=device)
 
         if save_model:
-            # torch.save(discriminator.state_dict(),
-            #           "{}_discriminator_{}.pt".format(
-            #               args.dataset, epoch + 1
-            #               ))
             torch.save(
                 discriminator.get_classifier().state_dict(),
                 "{}_classifier_head_epoch_{}.pt".format(dataset, epoch + 1),
             )
 
+    if save_model:
+        torch.save(discriminator.state_dict(), "{}_classifier.pt".format(dataset))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a discriminator on top of GPT-2 representations")
     parser.add_argument(
         "--dataset",
         type=str,
-        default="SST",
-        choices=("SST", "clickbait", "toxic", "generic"),
-        help="dataset to train the discriminator on."
-        "In case of generic, the dataset is expected"
-        "to be a TSBV file with structure: class \\t text",
-    )
+        default="HateOffensive",
+        choices=("HateOffensive","SentiTreeBank"),
+        help="dataset to train the discriminator on.")
+    parser.add_argument("--dataset_path", type=str, help="Dataset path.")
     parser.add_argument(
-        "--dataset_fp",
-        type=str,
-        default="",
-        help="File path of the dataset to use. " "Needed only in case of generic datadset",
-    )
+        "--pretrained_model", type=str,
+        default="gpt2-medium", help="Pretrained model to use as encoder")
+    parser.add_argument("--epochs", type=int,
+            default=10, metavar="N", help="Number of training epochs")
     parser.add_argument(
-        "--pretrained_model", type=str, default="gpt2-medium", help="Pretrained model to use as encoder"
-    )
-    parser.add_argument("--epochs", type=int, default=10, metavar="N", help="Number of training epochs")
-    parser.add_argument(
-        "--batch_size", type=int, default=64, metavar="N", help="input batch size for training (default: 64)"
-    )
+        "--batch_size", type=int, default=64, metavar="N",
+        help="input batch size for training (default: 64)")
     parser.add_argument(
         "--log_interval",
         type=int,
